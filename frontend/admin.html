@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>لوحة المدير — المعرض الوطني لدجاج الزينة 2026</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="assets/expo-logo.png">
+</head>
+<body>
+  <header id="site-header"></header>
+
+  <div class="page-head">
+    <h1>لوحة تحكم المدير</h1>
+    <p>إدارة المشاركين، الإحصائيات والتحكم في الحسابات</p>
+  </div>
+
+  <section class="section">
+    <div class="container">
+      <div class="alert alert-error" id="err"></div>
+
+      <!-- Stats -->
+      <div class="admin-stats" id="stats">
+        <div class="stat-card"><div class="num" id="s-users">—</div><div class="lbl">الأعضاء</div></div>
+        <div class="stat-card"><div class="num" id="s-parts">—</div><div class="lbl">المشاركات</div></div>
+        <div class="stat-card"><div class="num" id="s-birds">—</div><div class="lbl">إجمالي الطيور</div></div>
+        <div class="stat-card"><div class="num" id="s-cages">—</div><div class="lbl">إجمالي الأقفاص</div></div>
+        <div class="stat-card"><div class="num" id="s-wilayas">—</div><div class="lbl">الولايات</div></div>
+        <div class="stat-card"><div class="num" id="s-breeds">—</div><div class="lbl">السلالات</div></div>
+      </div>
+
+      <!-- Users table -->
+      <div class="toolbar">
+        <input id="search" placeholder="بحث بالاسم، الهاتف، الولاية أو البلدية...">
+        <button class="btn btn-outline" id="refreshBtn">تحديث</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th><th>الاسم</th><th>الهاتف</th><th>الولاية</th><th>البلدية</th>
+              <th>السلالة</th><th>الطيور</th><th>الأقفاص</th><th>الحالة</th>
+              <th>تاريخ التسجيل</th><th>إجراءات</th>
+            </tr>
+          </thead>
+          <tbody id="rows"><tr><td colspan="11" style="text-align:center">جارٍ التحميل...</td></tr></tbody>
+        </table>
+      </div>
+
+      <!-- Breakdown -->
+      <div class="two-col">
+        <div class="panel">
+          <h3 style="margin-top:0;color:var(--green-dark)">حسب الولاية</h3>
+          <div class="table-wrap" style="box-shadow:none">
+            <table><thead><tr><th>الولاية</th><th>مشاركون</th><th>طيور</th><th>أقفاص</th></tr></thead>
+            <tbody id="byWilaya"></tbody></table>
+          </div>
+        </div>
+        <div class="panel">
+          <h3 style="margin-top:0;color:var(--green-dark)">حسب السلالة</h3>
+          <div class="table-wrap" style="box-shadow:none">
+            <table><thead><tr><th>السلالة</th><th>مشاركون</th><th>طيور</th></tr></thead>
+            <tbody id="byBreed"></tbody></table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer id="site-footer"></footer>
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    if (!requireAdmin()) { /* redirected */ }
+    const err = document.getElementById('err');
+    const esc = (s) => (s == null ? '' : String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])));
+    const statusLabel = { pending:'قيد المراجعة', approved:'مقبولة', rejected:'مرفوضة' };
+
+    async function loadStats() {
+      const d = await api('/api/admin/stats', { auth: true });
+      const t = d.totals;
+      const set = (id, v) => { document.getElementById(id).textContent = v; };
+      set('s-users', t.total_users); set('s-parts', t.total_participations);
+      set('s-birds', t.total_birds); set('s-cages', t.total_cages);
+      set('s-wilayas', t.total_wilayas); set('s-breeds', t.total_breeds);
+      document.getElementById('byWilaya').innerHTML = d.byWilaya.map(r =>
+        `<tr><td>${esc(r.wilaya)}</td><td>${r.participants}</td><td>${r.birds}</td><td>${r.cages}</td></tr>`).join('')
+        || '<tr><td colspan="4" style="text-align:center">لا بيانات</td></tr>';
+      document.getElementById('byBreed').innerHTML = d.byBreed.map(r =>
+        `<tr><td>${esc(r.breed)}</td><td>${r.participants}</td><td>${r.birds}</td></tr>`).join('')
+        || '<tr><td colspan="3" style="text-align:center">لا بيانات</td></tr>';
+    }
+
+    async function loadUsers(q='') {
+      const d = await api('/api/admin/users' + (q ? ('?q=' + encodeURIComponent(q)) : ''), { auth: true });
+      const rows = document.getElementById('rows');
+      if (!d.users.length) { rows.innerHTML = '<tr><td colspan="11" style="text-align:center">لا يوجد مشاركون</td></tr>'; return; }
+      rows.innerHTML = d.users.map((u, i) => {
+        const st = u.status || 'pending';
+        const date = u.created_at ? new Date(u.created_at).toLocaleDateString('ar-DZ') : '';
+        return `<tr>
+          <td>${i+1}</td><td>${esc(u.full_name)}</td><td>${esc(u.phone)}</td>
+          <td>${esc(u.wilaya) || '—'}</td><td>${esc(u.baladya) || '—'}</td><td>${esc(u.breed) || '—'}</td>
+          <td>${u.num_birds ?? '—'}</td><td>${u.num_cages ?? '—'}</td>
+          <td><span class="badge ${st}">${statusLabel[st] || st}</span></td>
+          <td>${date}</td>
+          <td>
+            <select class="btn-sm" onchange="setStatus(${u.id}, this.value)">
+              <option value="">الحالة</option>
+              <option value="approved">قبول</option>
+              <option value="pending">مراجعة</option>
+              <option value="rejected">رفض</option>
+            </select>
+            <button class="btn btn-danger btn-sm" onclick="delUser(${u.id})">حذف</button>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function setStatus(id, status) {
+      if (!status) return;
+      try { await api('/api/admin/participations/' + id + '/status', { method:'PATCH', body:{ status }, auth:true });
+        await loadUsers(document.getElementById('search').value.trim()); await loadStats();
+      } catch (e) { err.textContent = e.message; err.classList.add('show'); }
+    }
+    async function delUser(id) {
+      if (!confirm('هل تريد حذف هذا العضو نهائياً؟')) return;
+      try { await api('/api/admin/users/' + id, { method:'DELETE', auth:true });
+        await loadUsers(document.getElementById('search').value.trim()); await loadStats();
+      } catch (e) { err.textContent = e.message; err.classList.add('show'); }
+    }
+    window.setStatus = setStatus; window.delUser = delUser;
+
+    document.getElementById('refreshBtn').onclick = () => { loadStats(); loadUsers(document.getElementById('search').value.trim()); };
+    let t; document.getElementById('search').addEventListener('input', (e) => {
+      clearTimeout(t); t = setTimeout(() => loadUsers(e.target.value.trim()), 300);
+    });
+
+    (async () => {
+      try { await loadStats(); await loadUsers(); }
+      catch (e) { err.textContent = e.message; err.classList.add('show'); }
+    })();
+  </script>
+</body>
+</html>

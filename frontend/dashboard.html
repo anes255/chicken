@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>مشاركتي — المعرض الوطني لدجاج الزينة 2026</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="assets/expo-logo.png">
+</head>
+<body>
+  <header id="site-header"></header>
+
+  <div class="page-head">
+    <h1>بيانات مشاركتي</h1>
+    <p>أدخل عدد الطيور والأقفاص وحدد ولايتك وبلديتك للمشاركة في المعرض</p>
+  </div>
+
+  <div class="form-wide">
+    <div class="panel">
+      <div class="alert alert-error" id="err"></div>
+      <div class="alert alert-success" id="ok"></div>
+      <form id="form">
+        <div class="grid-2">
+          <div class="field">
+            <label>الولاية</label>
+            <select name="wilaya" id="wilaya" required>
+              <option value="">— اختر الولاية —</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>البلدية</label>
+            <select name="baladya" id="baladya" required>
+              <option value="">— اختر البلدية —</option>
+            </select>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label>السلالة</label>
+            <select name="breed">
+              <option value="">— اختر السلالة —</option>
+              <option>براهما</option><option>كوشين</option><option>سيلكي</option>
+              <option>بولندي</option><option>ويندوت</option><option>سيبرايت</option>
+              <option>فيومي</option><option>أوركينغتون</option><option>سلالة محلية</option>
+              <option>أخرى</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>عدد الطيور</label>
+            <input name="num_birds" type="number" min="0" value="0" required>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label>عدد الأقفاص</label>
+            <input name="num_cages" type="number" min="0" value="0" required>
+          </div>
+          <div class="field">
+            <label>ملاحظات (اختياري)</label>
+            <input name="notes" placeholder="أي معلومات إضافية">
+          </div>
+        </div>
+        <button class="btn btn-primary btn-block" type="submit">حفظ بيانات المشاركة</button>
+      </form>
+      <p class="form-note" id="status-note"></p>
+    </div>
+  </div>
+
+  <footer id="site-footer"></footer>
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/wilayas.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    if (!requireAuth()) { /* redirected */ }
+    const err = document.getElementById('err'), ok = document.getElementById('ok');
+    const wSel = document.getElementById('wilaya'), bSel = document.getElementById('baladya');
+
+    // Populate wilayas
+    Object.keys(ALGERIA).forEach(w => {
+      const o = document.createElement('option'); o.value = w; o.textContent = w; wSel.appendChild(o);
+    });
+    function fillBaladyas(w, selected) {
+      bSel.innerHTML = '<option value="">— اختر البلدية —</option>';
+      (ALGERIA[w] || []).forEach(b => {
+        const o = document.createElement('option'); o.value = b; o.textContent = b;
+        if (b === selected) o.selected = true;
+        bSel.appendChild(o);
+      });
+    }
+    wSel.addEventListener('change', () => fillBaladyas(wSel.value));
+
+    // Load existing participation
+    (async () => {
+      try {
+        const { participation: p } = await api('/api/participations/me', { auth: true });
+        if (p) {
+          const f = document.getElementById('form');
+          wSel.value = p.wilaya; fillBaladyas(p.wilaya, p.baladya);
+          if (f.breed) f.breed.value = p.breed || '';
+          f.num_birds.value = p.num_birds; f.num_cages.value = p.num_cages; f.notes.value = p.notes || '';
+          const st = { pending:'قيد المراجعة', approved:'مقبولة', rejected:'مرفوضة' }[p.status] || p.status;
+          document.getElementById('status-note').textContent = 'حالة المشاركة: ' + st;
+        }
+      } catch {}
+    })();
+
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.classList.remove('show'); ok.classList.remove('show');
+      const f = e.target;
+      const body = {
+        wilaya: f.wilaya.value, baladya: f.baladya.value, breed: f.breed.value,
+        num_birds: f.num_birds.value, num_cages: f.num_cages.value, notes: f.notes.value,
+      };
+      try {
+        await api('/api/participations', { method: 'POST', body, auth: true });
+        ok.textContent = 'تم حفظ بيانات مشاركتك بنجاح.'; ok.classList.add('show');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      } catch (e2) { err.textContent = e2.message; err.classList.add('show'); }
+    });
+  </script>
+</body>
+</html>

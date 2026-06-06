@@ -1,0 +1,7 @@
+node_modules/
+*.log
+npm-debug.log
+
+# Never commit real secrets
+.env
+backend/.env
