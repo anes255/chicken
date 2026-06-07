@@ -46,11 +46,8 @@
   <section class="section">
     <div class="container">
       <div class="section-title"><h2>مكتبة السلالات</h2><p>أبرز سلالات دجاج الزينة المشاركة في المعرض</p></div>
-      <div class="cards">
-        <div class="breed-card"><img src="assets/breed-brahma.jpg" alt="براهما" onerror="this.style.background='#dfe7df'"><div class="name">براهما</div></div>
-        <div class="breed-card"><img src="assets/breed-cochin.jpg" alt="كوشين" onerror="this.style.background='#dfe7df'"><div class="name">كوشين</div></div>
-        <div class="breed-card"><img src="assets/breed-silkie.jpg" alt="سيلكي" onerror="this.style.background='#dfe7df'"><div class="name">سيلكي</div></div>
-        <div class="breed-card"><img src="assets/breed-polish.jpg" alt="بولندي" onerror="this.style.background='#dfe7df'"><div class="name">بولندي</div></div>
+      <div class="cards" id="breeds-grid">
+        <div style="grid-column:1/-1;text-align:center;color:var(--muted)">جارٍ التحميل...</div>
       </div>
     </div>
   </section>
@@ -87,14 +84,34 @@
   <script src="js/api.js"></script>
   <script src="js/app.js"></script>
   <script>
+    const esc = (s) => (s == null ? '' : String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])));
     (async () => {
       try {
         const s = await api('/api/public/stats');
-        document.getElementById('st-members').textContent = s.members ?? 0;
-        document.getElementById('st-wilayas').textContent = s.wilayas || 58;
-        document.getElementById('st-parts').textContent = s.participations ?? 0;
-        document.getElementById('st-birds').textContent = s.birds ?? 0;
+        animateCount(document.getElementById('st-members'), s.members ?? 0);
+        animateCount(document.getElementById('st-wilayas'), s.wilayas || 58);
+        animateCount(document.getElementById('st-parts'), s.participations ?? 0);
+        animateCount(document.getElementById('st-birds'), s.birds ?? 0);
       } catch { /* backend offline: keep placeholders */ }
+
+      const grid = document.getElementById('breeds-grid');
+      try {
+        const { breeds } = await api('/api/public/breeds');
+        if (!breeds || !breeds.length) {
+          grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--muted)">لا توجد سلالات بعد</div>';
+        } else {
+          grid.innerHTML = breeds.map(b => `
+            <div class="breed-card">
+              ${b.image_url
+                ? `<img src="${esc(b.image_url)}" alt="${esc(b.name)}" onerror="this.outerHTML='<div class=\\'breed-ph\\'>🐓</div>'">`
+                : `<div class="breed-ph">🐓</div>`}
+              <div class="name">${esc(b.name)}</div>
+              ${b.description ? `<div class="breed-desc">${esc(b.description)}</div>` : ''}
+            </div>`).join('');
+        }
+      } catch {
+        grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--muted)">تعذّر تحميل السلالات</div>';
+      }
     })();
   </script>
 </body>

@@ -89,4 +89,44 @@ router.delete('/users/:userId', adminRequired, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- Breeds library management ----------
+
+// List all breeds (admin view)
+router.get('/breeds', adminRequired, async (req, res) => {
+  const { rows } = await db.query(
+    'SELECT id, name, image_url, description, sort_order FROM breeds ORDER BY sort_order ASC, id ASC'
+  );
+  res.json({ breeds: rows });
+});
+
+// Create a breed
+router.post('/breeds', adminRequired, async (req, res) => {
+  const { name, image_url, description, sort_order } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: 'اسم السلالة مطلوب' });
+  const { rows } = await db.query(
+    `INSERT INTO breeds (name, image_url, description, sort_order)
+     VALUES ($1, $2, $3, $4) RETURNING *`,
+    [name.trim(), image_url || null, description || null, parseInt(sort_order, 10) || 0]
+  );
+  res.status(201).json({ breed: rows[0] });
+});
+
+// Update a breed
+router.put('/breeds/:id', adminRequired, async (req, res) => {
+  const { name, image_url, description, sort_order } = req.body || {};
+  if (!name || !name.trim()) return res.status(400).json({ error: 'اسم السلالة مطلوب' });
+  const { rows } = await db.query(
+    `UPDATE breeds SET name=$1, image_url=$2, description=$3, sort_order=$4 WHERE id=$5 RETURNING *`,
+    [name.trim(), image_url || null, description || null, parseInt(sort_order, 10) || 0, req.params.id]
+  );
+  if (!rows.length) return res.status(404).json({ error: 'السلالة غير موجودة' });
+  res.json({ breed: rows[0] });
+});
+
+// Delete a breed
+router.delete('/breeds/:id', adminRequired, async (req, res) => {
+  await db.query('DELETE FROM breeds WHERE id = $1', [req.params.id]);
+  res.json({ ok: true });
+});
+
 module.exports = router;

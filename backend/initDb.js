@@ -32,6 +32,15 @@ CREATE TABLE IF NOT EXISTS participations (
 
 CREATE INDEX IF NOT EXISTS idx_participations_wilaya ON participations(wilaya);
 
+CREATE TABLE IF NOT EXISTS breeds (
+  id          SERIAL PRIMARY KEY,
+  name        TEXT NOT NULL,
+  image_url   TEXT,
+  description TEXT,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Migrations for databases that already had an older "users" table
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
@@ -66,6 +75,24 @@ async function main() {
        SET password_hash = EXCLUDED.password_hash, is_admin = TRUE`,
     ['مدير المعرض', phone, hash]
   );
+
+  // Seed the breeds library once (only if empty)
+  const { rows } = await db.query('SELECT COUNT(*)::int AS n FROM breeds');
+  if (rows[0].n === 0) {
+    const seed = [
+      ['براهما', 'assets/breed-brahma.jpg', 'سلالة عملاقة هادئة الطباع، من أبرز سلالات الزينة.', 1],
+      ['كوشين', 'assets/breed-cochin.jpg', 'سلالة كثيفة الريش بأرجل مكسوّة بالريش.', 2],
+      ['سيلكي', 'assets/breed-silkie.jpg', 'سلالة بريش حريري ناعم ولون جلد داكن.', 3],
+      ['بولندي', 'assets/breed-polish.jpg', 'سلالة مميزة بعرفها الريشي الكبير.', 4],
+    ];
+    for (const [name, image_url, description, sort_order] of seed) {
+      await db.query(
+        'INSERT INTO breeds (name, image_url, description, sort_order) VALUES ($1,$2,$3,$4)',
+        [name, image_url, description, sort_order]
+      );
+    }
+    console.log('Seeded breeds library.');
+  }
 
   console.log(`Done. Admin ready -> phone: ${phone}  password: ${password}`);
   process.exit(0);

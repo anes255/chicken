@@ -20,4 +20,17 @@ router.get('/stats', async (req, res) => {
   }
 });
 
+// Public breeds library (no auth)
+router.get('/breeds', async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      'SELECT id, name, image_url, description FROM breeds ORDER BY sort_order ASC, id ASC'
+    );
+    res.json({ breeds: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'خطأ في الخادم' });
+  }
+});
+
 module.exports = router;
