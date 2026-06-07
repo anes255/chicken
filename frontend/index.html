@@ -88,10 +88,10 @@
     (async () => {
       try {
         const s = await api('/api/public/stats');
-        animateCount(document.getElementById('st-members'), s.members ?? 0);
-        animateCount(document.getElementById('st-wilayas'), s.wilayas || 58);
-        animateCount(document.getElementById('st-parts'), s.participations ?? 0);
-        animateCount(document.getElementById('st-birds'), s.birds ?? 0);
+        document.getElementById('st-members').textContent = s.members ?? 0;
+        document.getElementById('st-wilayas').textContent = s.wilayas || 58;
+        document.getElementById('st-parts').textContent = s.participations ?? 0;
+        document.getElementById('st-birds').textContent = s.birds ?? 0;
       } catch { /* backend offline: keep placeholders */ }
 
       const grid = document.getElementById('breeds-grid');
@@ -102,9 +102,7 @@
         } else {
           grid.innerHTML = breeds.map(b => `
             <div class="breed-card">
-              ${b.image_url
-                ? `<img src="${esc(b.image_url)}" alt="${esc(b.name)}" onerror="this.outerHTML='<div class=\\'breed-ph\\'>🐓</div>'">`
-                : `<div class="breed-ph">🐓</div>`}
+              <img src="${esc(b.image_url) || ''}" alt="${esc(b.name)}" onerror="this.style.background='#dfe7df';this.removeAttribute('src')">
               <div class="name">${esc(b.name)}</div>
               ${b.description ? `<div class="breed-desc">${esc(b.description)}</div>` : ''}
             </div>`).join('');
