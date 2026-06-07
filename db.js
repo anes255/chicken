@@ -23,8 +23,18 @@ pool.on('error', (err) => {
   console.error('Unexpected PostgreSQL pool error:', err.message);
 });
 
+// Default fancy / ornamental chicken breeds shown in the registration list.
+// Seeded only when the breeds table is empty, so admin edits persist.
+const DEFAULT_BREEDS = [
+  'براهما (Brahma)', 'كوشن (Cochin)', 'سيلكي / الحرير (Silkie)', 'سيبرايت (Sebright)',
+  'بولندي (Polish)', 'وايندوت (Wyandotte)', 'أوربينغتون (Orpington)', 'ليغهورن (Leghorn)',
+  'مارانس (Marans)', 'فافرول (Faverolles)', 'سيراما (Serama)', 'فينيكس (Phoenix)',
+  'هامبورغ (Hamburg)', 'ساسكس (Sussex)', 'أراوكانا (Araucana)', 'رود آيلاند (Rhode Island)',
+  'باندا (Bantam)', 'أيام سيماني (Ayam Cemani)', 'فيومي (Fayoumi)', 'أخرى',
+];
+
 /**
- * Create the database schema if it does not yet exist.
+ * Create the database schema if it does not yet exist (idempotent migrations).
  */
 async function initDb() {
   await pool.query(`
@@ -38,16 +48,33 @@ async function initDb() {
       baladya      VARCHAR(120) NOT NULL,
       num_birds    INTEGER NOT NULL DEFAULT 0 CHECK (num_birds >= 0),
       num_cages    INTEGER NOT NULL DEFAULT 0 CHECK (num_cages >= 0),
-      breed        VARCHAR(255),
+      breed        TEXT,
       notes        TEXT,
       created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
-  await pool.query(
-    'CREATE INDEX IF NOT EXISTS idx_participants_wilaya ON participants (wilaya);'
-  );
-  console.log('✓ Database schema ready (participants table).');
+  // Migrations for existing databases.
+  await pool.query("ALTER TABLE participants ALTER COLUMN breed TYPE TEXT;");
+  await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS entries JSONB NOT NULL DEFAULT '[]'::jsonb;");
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_participants_wilaya ON participants (wilaya);');
+
+  // Reference list of breeds, managed by the admin.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS breeds (
+      id         SERIAL PRIMARY KEY,
+      name       VARCHAR(160) UNIQUE NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM breeds');
+  if (rows[0].n === 0) {
+    await pool.query(
+      `INSERT INTO breeds (name) SELECT UNNEST($1::text[]) ON CONFLICT (name) DO NOTHING`,
+      [DEFAULT_BREEDS]
+    );
+  }
+  console.log('✓ Database schema ready (participants + breeds).');
 }
 
 module.exports = { pool, initDb };
