@@ -1,7 +1,11 @@
 'use strict';
 
+const crypto = require('crypto');
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 require('dotenv').config();
@@ -10,14 +14,62 @@ const { pool, initDb } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const JWT_SECRET = process.env.JWT_SECRET || 'brahma-club-maaradh-secret-2026';
 
-// Admin credentials (as specified by the organisers).
+// JWT secret MUST be provided in production. If missing, generate a strong
+// random one at boot so the public default secret can never be used to forge
+// admin tokens. (A random per-boot secret simply invalidates old sessions.)
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(48).toString('hex');
+if (!process.env.JWT_SECRET) {
+  console.warn('⚠  JWT_SECRET not set — generated a random one. Set JWT_SECRET in env to keep sessions across restarts.');
+}
+
+// Admin credentials (overridable via env; defaults match the organisers').
 const ADMIN_PHONE = process.env.ADMIN_PHONE || '0779452212';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 
-app.use(cors());
-app.use(express.json());
+// Behind Render/Vercel's proxy — required for correct client IPs (rate limiting).
+app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
+// --- Security & performance middleware -------------------------------------
+
+app.use(helmet({
+  contentSecurityPolicy: false,                       // API returns JSON, not HTML
+  crossOriginResourcePolicy: { policy: 'cross-origin' }, // allow the browser frontend to read responses
+}));
+app.use(compression());
+
+// CORS allowlist: any *.vercel.app, localhost, and anything in CORS_ORIGINS env.
+const extraOrigins = (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // non-browser clients (curl, health checks)
+    try {
+      const host = new URL(origin).hostname;
+      if (host === 'localhost' || host === '127.0.0.1') return cb(null, true);
+      if (/(^|\.)vercel\.app$/.test(host)) return cb(null, true);
+      if (extraOrigins.includes(origin)) return cb(null, true);
+    } catch (_) { /* malformed origin */ }
+    return cb(null, false); // unknown origin → no CORS headers → browser blocks
+  },
+}));
+
+app.use(express.json({ limit: '32kb' })); // cap body size to blunt payload-based DoS
+
+// Rate limiting (per IP). Tunable via env for high-traffic venue days.
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_API, 10) || 1000,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'عدد كبير من الطلبات، يرجى المحاولة بعد قليل' },
+});
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_AUTH, 10) || 100,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'محاولات كثيرة، يرجى المحاولة بعد قليل' },
+});
+app.use('/api/', apiLimiter);
 
 // Lazily initialise the schema once per (warm) serverless instance, so the API
 // works both as a long-running server and as a Vercel serverless function.
@@ -43,15 +95,25 @@ function normalizePhone(phone) {
   return String(phone || '').replace(/[\s\-]/g, '').trim();
 }
 
+// Trim a value to a maximum length (defends against oversized inputs).
+function clip(v, max) {
+  const s = v == null ? '' : String(v).trim();
+  return s.length > max ? s.slice(0, max) : s;
+}
+
+const MAX_ENTRIES = 50;       // max breeds per participant
+const MAX_COUNT = 100000;     // sane upper bound for birds/cages
+
 // Normalise the per-breed entries array: [{breed, birds, cages}, ...].
 // Falls back to a single legacy {breed, numBirds, numCages} entry when needed.
 function normalizeEntries(body) {
   let list = Array.isArray(body.entries) ? body.entries : [];
   list = list
+    .slice(0, MAX_ENTRIES)
     .map((e) => ({
-      breed: String(e.breed || '').trim(),
-      birds: Math.max(0, parseInt(e.birds, 10) || 0),
-      cages: Math.max(0, parseInt(e.cages, 10) || 0),
+      breed: clip(e && e.breed, 160),
+      birds: Math.min(MAX_COUNT, Math.max(0, parseInt(e && e.birds, 10) || 0)),
+      cages: Math.min(MAX_COUNT, Math.max(0, parseInt(e && e.cages, 10) || 0)),
     }))
     .filter((e) => e.breed);
   // Backward compatibility with the old single-breed form.
@@ -127,30 +189,39 @@ app.get('/api/health', async (_req, res) => {
 });
 
 // Register a new participant.
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', authLimiter, async (req, res) => {
   try {
     let { fullName, phone, email, password, wilaya, baladya, notes } = req.body;
     phone = normalizePhone(phone);
+    fullName = clip(fullName, 120);
+    email = clip(email, 160);
+    wilaya = clip(wilaya, 120);
+    baladya = clip(baladya, 120);
+    notes = clip(notes, 1000);
 
     if (!fullName || !phone || !password || !wilaya || !baladya) {
       return res.status(400).json({ error: 'يرجى ملء جميع الحقول المطلوبة' });
     }
-    if (String(password).length < 6) {
-      return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
+    if (!/^[0-9]{8,15}$/.test(phone)) {
+      return res.status(400).json({ error: 'رقم الهاتف غير صالح' });
+    }
+    const pw = String(password);
+    if (pw.length < 6 || pw.length > 200) {
+      return res.status(400).json({ error: 'كلمة المرور يجب أن تكون بين 6 و200 حرفاً' });
     }
 
     const { list, totalBirds, totalCages, breedLabel } = normalizeEntries(req.body);
     if (list.length === 0) {
       return res.status(400).json({ error: 'يرجى إضافة سلالة واحدة على الأقل مع عدد الطيور والأقفاص' });
     }
-    const hash = await bcrypt.hash(String(password), 10);
+    const hash = await bcrypt.hash(pw, 10);
 
     const { rows } = await pool.query(
       `INSERT INTO participants
          (full_name, phone, email, password, wilaya, baladya, num_birds, num_cages, breed, entries, notes)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)
        RETURNING *`,
-      [fullName.trim(), phone, email || null, hash, wilaya, baladya, totalBirds, totalCages, breedLabel || null, JSON.stringify(list), notes || null]
+      [fullName, phone, email || null, hash, wilaya, baladya, totalBirds, totalCages, breedLabel || null, JSON.stringify(list), notes || null]
     );
 
     const user = publicUser(rows[0]);
@@ -166,7 +237,7 @@ app.post('/api/register', async (req, res) => {
 });
 
 // Login (participant or admin).
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', authLimiter, async (req, res) => {
   try {
     let { phone, password } = req.body;
     phone = normalizePhone(phone);
@@ -234,9 +305,17 @@ app.put('/api/me', auth, async (req, res) => {
 
 // --- Breeds (public list + admin management) -------------------------------
 
+// Short in-memory cache for the public breeds list (read-heavy, rarely changes).
+let breedsCache = { at: 0, data: null };
+const BREEDS_TTL = 60 * 1000;
+
 app.get('/api/breeds', async (_req, res) => {
   try {
+    if (breedsCache.data && Date.now() - breedsCache.at < BREEDS_TTL) {
+      return res.json({ breeds: breedsCache.data });
+    }
     const { rows } = await pool.query('SELECT id, name FROM breeds ORDER BY name');
+    breedsCache = { at: Date.now(), data: rows };
     res.json({ breeds: rows });
   } catch (e) {
     res.status(500).json({ error: 'تعذّر تحميل قائمة السلالات' });
@@ -244,12 +323,13 @@ app.get('/api/breeds', async (_req, res) => {
 });
 
 app.post('/api/admin/breeds', auth, adminOnly, async (req, res) => {
-  const name = String(req.body.name || '').trim();
+  const name = clip(req.body.name, 160);
   if (!name) return res.status(400).json({ error: 'يرجى إدخال اسم السلالة' });
   try {
     const { rows } = await pool.query(
       'INSERT INTO breeds (name) VALUES ($1) RETURNING id, name', [name]
     );
+    breedsCache = { at: 0, data: null };
     res.status(201).json({ breed: rows[0] });
   } catch (e) {
     if (e.code === '23505') return res.status(409).json({ error: 'هذه السلالة موجودة مسبقاً' });
@@ -260,6 +340,7 @@ app.post('/api/admin/breeds', auth, adminOnly, async (req, res) => {
 app.delete('/api/admin/breeds/:id', auth, adminOnly, async (req, res) => {
   const { rowCount } = await pool.query('DELETE FROM breeds WHERE id = $1', [req.params.id]);
   if (rowCount === 0) return res.status(404).json({ error: 'السلالة غير موجودة' });
+  breedsCache = { at: 0, data: null };
   res.json({ ok: true });
 });
 
@@ -343,15 +424,22 @@ app.get('/api/admin/stats', auth, adminOnly, async (_req, res) => {
 });
 
 app.put('/api/admin/participants/:id', auth, adminOnly, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'معرّف غير صالح' });
   try {
-    const { fullName, phone, email, wilaya, baladya, notes } = req.body;
     const { list, totalBirds, totalCages, breedLabel } = normalizeEntries(req.body);
+    const fullName = clip(req.body.fullName, 120);
+    const phone = normalizePhone(req.body.phone);
+    const email = clip(req.body.email, 160);
+    const wilaya = clip(req.body.wilaya, 120);
+    const baladya = clip(req.body.baladya, 120);
+    const notes = clip(req.body.notes, 1000);
     const { rows } = await pool.query(
       `UPDATE participants SET
          full_name=$1, phone=$2, email=$3, wilaya=$4, baladya=$5,
          num_birds=$6, num_cages=$7, breed=$8, entries=$9::jsonb, notes=$10, updated_at=NOW()
        WHERE id=$11 RETURNING *`,
-      [fullName, normalizePhone(phone), email || null, wilaya, baladya, totalBirds, totalCages, breedLabel || null, JSON.stringify(list), notes || null, req.params.id]
+      [fullName, phone, email || null, wilaya, baladya, totalBirds, totalCages, breedLabel || null, JSON.stringify(list), notes || null, id]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'المشارك غير موجود' });
     res.json({ user: publicUser(rows[0]) });

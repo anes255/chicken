@@ -3,20 +3,32 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-// Connection string can be overridden via the DATABASE_URL environment
-// variable (recommended on Render / Railway / Vercel). Falls back to the
-// project's Neon database so the API works out of the box.
-const connectionString =
-  process.env.DATABASE_URL ||
-  'postgresql://neondb_owner:npg_D6axtk1hSEUv@ep-gentle-bread-apa1bojz-pooler.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require';
+// The database connection string MUST come from the DATABASE_URL environment
+// variable. No credentials are stored in the source code.
+function cleanConnString(raw) {
+  if (!raw) return '';
+  let s = String(raw).trim();
+  // Paste-proofing: strip a `psql ` wrapper and surrounding quotes.
+  s = s.replace(/^psql\s+/i, '').replace(/^['"]|['"]$/g, '').trim();
+  // `channel_binding=require` breaks the node-postgres driver — drop it.
+  s = s.replace(/([?&])channel_binding=[^&]*/i, '$1').replace(/[?&]$/, '');
+  return s;
+}
 
-// Small pool — friendly to serverless (Vercel) where many instances may run.
-// The Neon `-pooler` endpoint (PgBouncer) handles fan-out.
+const connectionString = cleanConnString(process.env.DATABASE_URL);
+if (!connectionString) {
+  console.error('FATAL: DATABASE_URL environment variable is not set.');
+  throw new Error('DATABASE_URL is required');
+}
+
+// Pool sized for a persistent host (Render). The Neon `-pooler` endpoint
+// (PgBouncer) multiplexes these across many concurrent requests.
 const pool = new Pool({
   connectionString,
   ssl: { rejectUnauthorized: false },
-  max: 3,
+  max: parseInt(process.env.DB_POOL_MAX, 10) || 10,
   idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 });
 
 pool.on('error', (err) => {
@@ -58,6 +70,9 @@ async function initDb() {
   await pool.query("ALTER TABLE participants ALTER COLUMN breed TYPE TEXT;");
   await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS entries JSONB NOT NULL DEFAULT '[]'::jsonb;");
   await pool.query('CREATE INDEX IF NOT EXISTS idx_participants_wilaya ON participants (wilaya);');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_participants_created ON participants (created_at DESC);');
+  // GIN index makes the breed-containment filter (entries @> ...) fast at scale.
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_participants_entries ON participants USING GIN (entries);');
 
   // Reference list of breeds, managed by the admin.
   await pool.query(`
