@@ -10,10 +10,12 @@ const connectionString =
   process.env.DATABASE_URL ||
   'postgresql://neondb_owner:npg_D6axtk1hSEUv@ep-gentle-bread-apa1bojz-pooler.c-7.us-east-1.aws.neon.tech/neondb?sslmode=require';
 
+// Small pool — friendly to serverless (Vercel) where many instances may run.
+// The Neon `-pooler` endpoint (PgBouncer) handles fan-out.
 const pool = new Pool({
   connectionString,
   ssl: { rejectUnauthorized: false },
-  max: 5,
+  max: 3,
   idleTimeoutMillis: 30000,
 });
 

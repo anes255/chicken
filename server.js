@@ -19,6 +19,20 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 app.use(cors());
 app.use(express.json());
 
+// Lazily initialise the schema once per (warm) serverless instance, so the API
+// works both as a long-running server and as a Vercel serverless function.
+let dbReady = null;
+app.use(async (_req, _res, next) => {
+  try {
+    if (!dbReady) dbReady = initDb();
+    await dbReady;
+    next();
+  } catch (e) {
+    dbReady = null; // allow retry on next request
+    next(e);
+  }
+});
+
 // --- Helpers ---------------------------------------------------------------
 
 function signToken(payload) {
@@ -262,11 +276,16 @@ app.delete('/api/admin/participants/:id', auth, adminOnly, async (req, res) => {
 
 // --- Start -----------------------------------------------------------------
 
-initDb()
-  .then(() => {
-    app.listen(PORT, () => console.log(`✓ API running on port ${PORT}`));
-  })
-  .catch((e) => {
-    console.error('Failed to initialise database:', e.message);
-    process.exit(1);
-  });
+// Error handler (JSON).
+app.use((err, _req, res, _next) => {
+  console.error('Unhandled error:', err.message);
+  res.status(500).json({ error: 'حدث خطأ في الخادم' });
+});
+
+// Only start a listener when run directly (local / Render / Railway).
+// On Vercel the app is imported as a serverless handler instead.
+if (require.main === module) {
+  app.listen(PORT, () => console.log(`✓ API running on port ${PORT}`));
+}
+
+module.exports = app;
