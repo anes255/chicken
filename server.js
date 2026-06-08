@@ -31,6 +31,18 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
+// --- DDoS / flood protection (first line of defence) -----------------------
+// A short-window per-IP burst limiter on EVERY route. Floods are rejected here
+// — before helmet, body parsing, or any DB access — so they cost almost nothing.
+const burstLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: parseInt(process.env.RATE_LIMIT_BURST, 10) || 120, // requests/minute/IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'عدد كبير من الطلبات في وقت قصير، يرجى التمهّل قليلاً' },
+});
+app.use(burstLimiter);
+
 // --- Security & performance middleware -------------------------------------
 
 app.use(helmet({
