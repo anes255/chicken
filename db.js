@@ -89,7 +89,18 @@ async function initDb() {
       [DEFAULT_BREEDS]
     );
   }
-  console.log('✓ Database schema ready (participants + breeds).');
+
+  // Additional admin accounts (the primary admin stays in env vars).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS admins (
+      id         SERIAL PRIMARY KEY,
+      full_name  VARCHAR(160) NOT NULL,
+      phone      VARCHAR(30) UNIQUE NOT NULL,
+      password   VARCHAR(255) NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+  console.log('✓ Database schema ready (participants + breeds + admins).');
 }
 
 module.exports = { pool, initDb };

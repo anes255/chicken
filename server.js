@@ -257,10 +257,21 @@ app.post('/api/login', authLimiter, async (req, res) => {
       return res.status(400).json({ error: 'يرجى إدخال رقم الهاتف وكلمة المرور' });
     }
 
-    // Admin path.
+    // Primary admin (from env vars — cannot be deleted).
     if (phone === ADMIN_PHONE && password === ADMIN_PASSWORD) {
-      const token = signToken({ id: 0, phone, role: 'admin' });
-      return res.json({ token, role: 'admin', user: { fullName: 'إدارة المعرض', phone, role: 'admin' } });
+      const token = signToken({ id: 0, phone, role: 'admin', primary: true });
+      return res.json({ token, role: 'admin', user: { fullName: 'المدير الأساسي', phone, role: 'admin' } });
+    }
+
+    // Additional admins (managed from the admin panel).
+    const adminRows = await pool.query('SELECT * FROM admins WHERE phone = $1', [phone]);
+    if (adminRows.rows.length) {
+      const okAdmin = await bcrypt.compare(String(password), adminRows.rows[0].password);
+      if (okAdmin) {
+        const a = adminRows.rows[0];
+        const token = signToken({ id: a.id, phone: a.phone, role: 'admin', adminId: a.id });
+        return res.json({ token, role: 'admin', user: { fullName: a.full_name, phone: a.phone, role: 'admin' } });
+      }
     }
 
     const { rows } = await pool.query('SELECT * FROM participants WHERE phone = $1', [phone]);
@@ -464,6 +475,76 @@ app.put('/api/admin/participants/:id', auth, adminOnly, async (req, res) => {
 app.delete('/api/admin/participants/:id', auth, adminOnly, async (req, res) => {
   const { rowCount } = await pool.query('DELETE FROM participants WHERE id = $1', [req.params.id]);
   if (rowCount === 0) return res.status(404).json({ error: 'المشارك غير موجود' });
+  res.json({ ok: true });
+});
+
+// --- Admin accounts management ---------------------------------------------
+
+function publicAdmin(r) {
+  return { id: r.id, fullName: r.full_name, phone: r.phone, createdAt: r.created_at };
+}
+
+// List admins (the primary env admin is shown separately and is not editable).
+app.get('/api/admin/admins', auth, adminOnly, async (_req, res) => {
+  const { rows } = await pool.query('SELECT id, full_name, phone, created_at FROM admins ORDER BY created_at');
+  res.json({
+    primary: { phone: ADMIN_PHONE, fullName: 'المدير الأساسي' },
+    admins: rows.map(publicAdmin),
+  });
+});
+
+// Add a new admin.
+app.post('/api/admin/admins', auth, adminOnly, async (req, res) => {
+  const fullName = clip(req.body.fullName, 120);
+  const phone = normalizePhone(req.body.phone);
+  const pw = String(req.body.password || '');
+  if (!fullName || !phone) return res.status(400).json({ error: 'يرجى إدخال الاسم ورقم الهاتف' });
+  if (!/^[0-9]{8,15}$/.test(phone)) return res.status(400).json({ error: 'رقم الهاتف غير صالح' });
+  if (pw.length < 6 || pw.length > 200) return res.status(400).json({ error: 'كلمة المرور يجب أن تكون 6 أحرف على الأقل' });
+  if (phone === ADMIN_PHONE) return res.status(409).json({ error: 'هذا الرقم محجوز للمدير الأساسي' });
+  try {
+    const hash = await bcrypt.hash(pw, 10);
+    const { rows } = await pool.query(
+      'INSERT INTO admins (full_name, phone, password) VALUES ($1,$2,$3) RETURNING id, full_name, phone, created_at',
+      [fullName, phone, hash]
+    );
+    res.status(201).json({ admin: publicAdmin(rows[0]) });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'رقم الهاتف مستعمل من طرف مدير آخر' });
+    res.status(500).json({ error: 'تعذّر إضافة المدير' });
+  }
+});
+
+// Update an admin's info (password optional).
+app.put('/api/admin/admins/:id', auth, adminOnly, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'معرّف غير صالح' });
+  const fullName = clip(req.body.fullName, 120);
+  const phone = normalizePhone(req.body.phone);
+  const pw = req.body.password ? String(req.body.password) : '';
+  if (!fullName || !phone) return res.status(400).json({ error: 'يرجى إدخال الاسم ورقم الهاتف' });
+  if (!/^[0-9]{8,15}$/.test(phone)) return res.status(400).json({ error: 'رقم الهاتف غير صالح' });
+  if (phone === ADMIN_PHONE) return res.status(409).json({ error: 'هذا الرقم محجوز للمدير الأساسي' });
+  if (pw && (pw.length < 6 || pw.length > 200)) return res.status(400).json({ error: 'كلمة المرور قصيرة جداً' });
+  try {
+    const hash = pw ? await bcrypt.hash(pw, 10) : null;
+    const { rows } = await pool.query(
+      `UPDATE admins SET full_name=$1, phone=$2, password=COALESCE($3, password)
+       WHERE id=$4 RETURNING id, full_name, phone, created_at`,
+      [fullName, phone, hash, id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'المدير غير موجود' });
+    res.json({ admin: publicAdmin(rows[0]) });
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'رقم الهاتف مستعمل من طرف مدير آخر' });
+    res.status(500).json({ error: 'تعذّر تحديث بيانات المدير' });
+  }
+});
+
+// Delete an admin.
+app.delete('/api/admin/admins/:id', auth, adminOnly, async (req, res) => {
+  const { rowCount } = await pool.query('DELETE FROM admins WHERE id = $1', [req.params.id]);
+  if (rowCount === 0) return res.status(404).json({ error: 'المدير غير موجود' });
   res.json({ ok: true });
 });
 
