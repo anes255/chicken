@@ -152,12 +152,37 @@ function publicUser(row) {
     baladya: row.baladya,
     numBirds: row.num_birds,
     numCages: row.num_cages,
+    cagePrice: row.cage_price != null ? Number(row.cage_price) : 0,
     breed: row.breed,
     entries: Array.isArray(row.entries) ? row.entries : [],
     notes: row.notes,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+// --- Settings (registration open/closed + deadline) ------------------------
+
+async function getSetting(key, def) {
+  const r = await pool.query('SELECT value FROM settings WHERE key = $1', [key]);
+  return r.rows.length ? r.rows[0].value : def;
+}
+async function setSetting(key, value) {
+  await pool.query(
+    'INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value',
+    [key, String(value)]
+  );
+}
+async function registrationState() {
+  const open = (await getSetting('registration_open', 'true')) === 'true';
+  const deadlineRaw = await getSetting('registration_deadline', '');
+  const deadline = deadlineRaw || null;
+  let effectiveOpen = open;
+  if (effectiveOpen && deadline) {
+    const t = new Date(deadline).getTime();
+    if (!isNaN(t) && Date.now() >= t) effectiveOpen = false;
+  }
+  return { open, deadline, effectiveOpen };
 }
 
 // Auth middleware -----------------------------------------------------------
@@ -200,9 +225,25 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
+// Public: registration open/closed state (+ deadline) for the register page.
+app.get('/api/settings', async (_req, res) => {
+  try {
+    const s = await registrationState();
+    res.json({ registrationOpen: s.effectiveOpen, open: s.open, deadline: s.deadline });
+  } catch (e) {
+    res.status(500).json({ error: 'تعذّر تحميل الإعدادات' });
+  }
+});
+
 // Register a new participant.
 app.post('/api/register', authLimiter, async (req, res) => {
   try {
+    // Block registrations when the admin has closed them (or the deadline passed).
+    const reg = await registrationState();
+    if (!reg.effectiveOpen) {
+      return res.status(403).json({ error: 'التسجيل مغلق حالياً. شكراً لاهتمامكم.' });
+    }
+
     let { fullName, phone, email, password, wilaya, baladya, notes } = req.body;
     phone = normalizePhone(phone);
     fullName = clip(fullName, 120);
@@ -226,14 +267,15 @@ app.post('/api/register', authLimiter, async (req, res) => {
     if (list.length === 0) {
       return res.status(400).json({ error: 'يرجى إضافة سلالة واحدة على الأقل مع عدد الطيور والأقفاص' });
     }
+    const cagePrice = Math.min(99999999, Math.max(0, parseFloat(req.body.cagePrice) || 0));
     const hash = await bcrypt.hash(pw, 10);
 
     const { rows } = await pool.query(
       `INSERT INTO participants
-         (full_name, phone, email, password, wilaya, baladya, num_birds, num_cages, breed, entries, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)
+         (full_name, phone, email, password, wilaya, baladya, num_birds, num_cages, cage_price, breed, entries, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)
        RETURNING *`,
-      [fullName, phone, email || null, hash, wilaya, baladya, totalBirds, totalCages, breedLabel || null, JSON.stringify(list), notes || null]
+      [fullName, phone, email || null, hash, wilaya, baladya, totalBirds, totalCages, cagePrice, breedLabel || null, JSON.stringify(list), notes || null]
     );
 
     const user = publicUser(rows[0]);
@@ -311,13 +353,14 @@ app.put('/api/me', auth, async (req, res) => {
     if (list.length === 0) {
       return res.status(400).json({ error: 'يرجى إضافة سلالة واحدة على الأقل' });
     }
+    const cagePrice = Math.min(99999999, Math.max(0, parseFloat(req.body.cagePrice) || 0));
     const { rows } = await pool.query(
       `UPDATE participants SET
          full_name = COALESCE($1, full_name),
          email = $2, wilaya = COALESCE($3, wilaya), baladya = COALESCE($4, baladya),
-         num_birds = $5, num_cages = $6, breed = $7, entries = $8::jsonb, notes = $9, updated_at = NOW()
-       WHERE id = $10 RETURNING *`,
-      [fullName, email || null, wilaya, baladya, totalBirds, totalCages, breedLabel || null, JSON.stringify(list), notes || null, req.user.id]
+         num_birds = $5, num_cages = $6, cage_price = $7, breed = $8, entries = $9::jsonb, notes = $10, updated_at = NOW()
+       WHERE id = $11 RETURNING *`,
+      [fullName, email || null, wilaya, baladya, totalBirds, totalCages, cagePrice, breedLabel || null, JSON.stringify(list), notes || null, req.user.id]
     );
     res.json({ user: publicUser(rows[0]) });
   } catch (e) {
@@ -457,12 +500,13 @@ app.put('/api/admin/participants/:id', auth, adminOnly, async (req, res) => {
     const wilaya = clip(req.body.wilaya, 120);
     const baladya = clip(req.body.baladya, 120);
     const notes = clip(req.body.notes, 1000);
+    const cagePrice = Math.min(99999999, Math.max(0, parseFloat(req.body.cagePrice) || 0));
     const { rows } = await pool.query(
       `UPDATE participants SET
          full_name=$1, phone=$2, email=$3, wilaya=$4, baladya=$5,
-         num_birds=$6, num_cages=$7, breed=$8, entries=$9::jsonb, notes=$10, updated_at=NOW()
-       WHERE id=$11 RETURNING *`,
-      [fullName, phone, email || null, wilaya, baladya, totalBirds, totalCages, breedLabel || null, JSON.stringify(list), notes || null, id]
+         num_birds=$6, num_cages=$7, cage_price=$8, breed=$9, entries=$10::jsonb, notes=$11, updated_at=NOW()
+       WHERE id=$12 RETURNING *`,
+      [fullName, phone, email || null, wilaya, baladya, totalBirds, totalCages, cagePrice, breedLabel || null, JSON.stringify(list), notes || null, id]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'المشارك غير موجود' });
     res.json({ user: publicUser(rows[0]) });
@@ -546,6 +590,22 @@ app.delete('/api/admin/admins/:id', auth, adminOnly, async (req, res) => {
   const { rowCount } = await pool.query('DELETE FROM admins WHERE id = $1', [req.params.id]);
   if (rowCount === 0) return res.status(404).json({ error: 'المدير غير موجود' });
   res.json({ ok: true });
+});
+
+// --- Registration control (admin) ------------------------------------------
+
+app.put('/api/admin/settings', auth, adminOnly, async (req, res) => {
+  try {
+    const open = req.body.open === true || req.body.open === 'true';
+    let deadline = req.body.deadline ? String(req.body.deadline).trim() : '';
+    if (deadline && isNaN(new Date(deadline).getTime())) deadline = '';
+    await setSetting('registration_open', open ? 'true' : 'false');
+    await setSetting('registration_deadline', deadline);
+    const s = await registrationState();
+    res.json({ registrationOpen: s.effectiveOpen, open: s.open, deadline: s.deadline });
+  } catch (e) {
+    res.status(500).json({ error: 'تعذّر حفظ الإعدادات' });
+  }
 });
 
 // --- Start -----------------------------------------------------------------

@@ -69,6 +69,7 @@ async function initDb() {
   // Migrations for existing databases.
   await pool.query("ALTER TABLE participants ALTER COLUMN breed TYPE TEXT;");
   await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS entries JSONB NOT NULL DEFAULT '[]'::jsonb;");
+  await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS cage_price NUMERIC(12,2) NOT NULL DEFAULT 0;");
   await pool.query('CREATE INDEX IF NOT EXISTS idx_participants_wilaya ON participants (wilaya);');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_participants_created ON participants (created_at DESC);');
   // GIN index makes the breed-containment filter (entries @> ...) fast at scale.
@@ -100,7 +101,21 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
-  console.log('✓ Database schema ready (participants + breeds + admins).');
+
+  // Key/value site settings (registration open/closed, deadline, …).
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS settings (
+      key   VARCHAR(80) PRIMARY KEY,
+      value TEXT
+    );
+  `);
+  await pool.query(
+    `INSERT INTO settings (key, value) VALUES
+       ('registration_open', 'true'),
+       ('registration_deadline', '')
+     ON CONFLICT (key) DO NOTHING`
+  );
+  console.log('✓ Database schema ready (participants + breeds + admins + settings).');
 }
 
 module.exports = { pool, initDb };
