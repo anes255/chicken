@@ -103,8 +103,16 @@ function signToken(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
 }
 
+// Canonicalise to the local Algerian form 0XXXXXXXXXX (strips +213 / 00213 / 213).
 function normalizePhone(phone) {
-  return String(phone || '').replace(/[\s\-]/g, '').trim();
+  let p = String(phone || '').replace(/[\s\-().]/g, '').trim();
+  p = p.replace(/^\+?(?:00)?213/, '');
+  if (p && p[0] !== '0') p = '0' + p;
+  return p;
+}
+// Algerian mobile numbers: 10 digits starting with 05, 06 or 07.
+function isAlgerianMobile(p) {
+  return /^0[567][0-9]{8}$/.test(p);
 }
 
 // Trim a value to a maximum length (defends against oversized inputs).
@@ -150,6 +158,7 @@ function publicUser(row) {
     email: row.email,
     wilaya: row.wilaya,
     baladya: row.baladya,
+    address: row.address,
     numBirds: row.num_birds,
     numCages: row.num_cages,
     cagePrice: row.cage_price != null ? Number(row.cage_price) : 0,
@@ -244,19 +253,21 @@ app.post('/api/register', authLimiter, async (req, res) => {
       return res.status(403).json({ error: 'التسجيل مغلق حالياً. شكراً لاهتمامكم.' });
     }
 
-    let { fullName, phone, email, password, wilaya, baladya, notes } = req.body;
+    let { fullName, phone, email, password, wilaya, baladya, address, notes } = req.body;
     phone = normalizePhone(phone);
     fullName = clip(fullName, 120);
     email = clip(email, 160);
     wilaya = clip(wilaya, 120);
     baladya = clip(baladya, 120);
+    address = clip(address, 300);
     notes = clip(notes, 1000);
 
-    if (!fullName || !phone || !password || !wilaya || !baladya) {
+    // Mandatory fields: name, address, phone, wilaya, baladya (+ password).
+    if (!fullName || !phone || !password || !wilaya || !baladya || !address) {
       return res.status(400).json({ error: 'يرجى ملء جميع الحقول المطلوبة' });
     }
-    if (!/^[0-9]{8,15}$/.test(phone)) {
-      return res.status(400).json({ error: 'رقم الهاتف غير صالح' });
+    if (!isAlgerianMobile(phone)) {
+      return res.status(400).json({ error: 'يرجى إدخال رقم هاتف جزائري صحيح (يبدأ بـ 05 أو 06 أو 07)' });
     }
     const pw = String(password);
     if (pw.length < 6 || pw.length > 200) {
@@ -264,18 +275,29 @@ app.post('/api/register', authLimiter, async (req, res) => {
     }
 
     const { list, totalBirds, totalCages, breedLabel } = normalizeEntries(req.body);
-    if (list.length === 0) {
-      return res.status(400).json({ error: 'يرجى إضافة سلالة واحدة على الأقل مع عدد الطيور والأقفاص' });
+    if (list.length === 0 || list.some((e) => e.birds <= 0 || e.cages <= 0)) {
+      return res.status(400).json({ error: 'يرجى إدخال سلالة واحدة على الأقل مع عدد الطيور والأقفاص لكل سلالة' });
     }
     const cagePrice = Math.min(99999999, Math.max(0, parseFloat(req.body.cagePrice) || 0));
+
+    // Block duplicate phone or email (case-insensitive).
+    const dupe = await pool.query(
+      "SELECT phone, email FROM participants WHERE phone = $1 OR (email IS NOT NULL AND email <> '' AND lower(email) = lower($2)) LIMIT 1",
+      [phone, email || '']
+    );
+    if (dupe.rows.length) {
+      if (dupe.rows[0].phone === phone) return res.status(409).json({ error: 'رقم الهاتف مسجّل مسبقاً' });
+      return res.status(409).json({ error: 'البريد الإلكتروني مستعمل مسبقاً' });
+    }
+
     const hash = await bcrypt.hash(pw, 10);
 
     const { rows } = await pool.query(
       `INSERT INTO participants
-         (full_name, phone, email, password, wilaya, baladya, num_birds, num_cages, cage_price, breed, entries, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)
+         (full_name, phone, email, password, wilaya, baladya, address, num_birds, num_cages, cage_price, breed, entries, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)
        RETURNING *`,
-      [fullName, phone, email || null, hash, wilaya, baladya, totalBirds, totalCages, cagePrice, breedLabel || null, JSON.stringify(list), notes || null]
+      [fullName, phone, email || null, hash, wilaya, baladya, address, totalBirds, totalCages, cagePrice, breedLabel || null, JSON.stringify(list), notes || null]
     );
 
     const user = publicUser(rows[0]);
@@ -283,7 +305,8 @@ app.post('/api/register', authLimiter, async (req, res) => {
     res.status(201).json({ token, user, role: 'participant' });
   } catch (e) {
     if (e.code === '23505') {
-      return res.status(409).json({ error: 'رقم الهاتف مسجّل مسبقاً' });
+      const isEmail = e.constraint && e.constraint.includes('email');
+      return res.status(409).json({ error: isEmail ? 'البريد الإلكتروني مستعمل مسبقاً' : 'رقم الهاتف مسجّل مسبقاً' });
     }
     console.error('register error:', e.message);
     res.status(500).json({ error: 'حدث خطأ أثناء التسجيل' });
@@ -348,7 +371,7 @@ app.get('/api/me', auth, async (req, res) => {
 app.put('/api/me', auth, async (req, res) => {
   if (req.user.role === 'admin') return res.status(403).json({ error: 'غير مسموح' });
   try {
-    const { fullName, email, wilaya, baladya, notes } = req.body;
+    const { fullName, email, wilaya, baladya, address, notes } = req.body;
     const { list, totalBirds, totalCages, breedLabel } = normalizeEntries(req.body);
     if (list.length === 0) {
       return res.status(400).json({ error: 'يرجى إضافة سلالة واحدة على الأقل' });
@@ -357,13 +380,14 @@ app.put('/api/me', auth, async (req, res) => {
     const { rows } = await pool.query(
       `UPDATE participants SET
          full_name = COALESCE($1, full_name),
-         email = $2, wilaya = COALESCE($3, wilaya), baladya = COALESCE($4, baladya),
-         num_birds = $5, num_cages = $6, cage_price = $7, breed = $8, entries = $9::jsonb, notes = $10, updated_at = NOW()
-       WHERE id = $11 RETURNING *`,
-      [fullName, email || null, wilaya, baladya, totalBirds, totalCages, cagePrice, breedLabel || null, JSON.stringify(list), notes || null, req.user.id]
+         email = $2, wilaya = COALESCE($3, wilaya), baladya = COALESCE($4, baladya), address = $5,
+         num_birds = $6, num_cages = $7, cage_price = $8, breed = $9, entries = $10::jsonb, notes = $11, updated_at = NOW()
+       WHERE id = $12 RETURNING *`,
+      [fullName, email || null, wilaya, baladya, clip(address, 300) || null, totalBirds, totalCages, cagePrice, breedLabel || null, JSON.stringify(list), notes || null, req.user.id]
     );
     res.json({ user: publicUser(rows[0]) });
   } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'البريد الإلكتروني مستعمل مسبقاً' });
     console.error('update me error:', e.message);
     res.status(500).json({ error: 'تعذّر تحديث البيانات' });
   }
@@ -500,18 +524,25 @@ app.put('/api/admin/participants/:id', auth, adminOnly, async (req, res) => {
     const wilaya = clip(req.body.wilaya, 120);
     const baladya = clip(req.body.baladya, 120);
     const notes = clip(req.body.notes, 1000);
+    const address = clip(req.body.address, 300);
     const cagePrice = Math.min(99999999, Math.max(0, parseFloat(req.body.cagePrice) || 0));
+    if (phone && !isAlgerianMobile(phone)) {
+      return res.status(400).json({ error: 'رقم هاتف جزائري غير صحيح' });
+    }
     const { rows } = await pool.query(
       `UPDATE participants SET
-         full_name=$1, phone=$2, email=$3, wilaya=$4, baladya=$5,
-         num_birds=$6, num_cages=$7, cage_price=$8, breed=$9, entries=$10::jsonb, notes=$11, updated_at=NOW()
-       WHERE id=$12 RETURNING *`,
-      [fullName, phone, email || null, wilaya, baladya, totalBirds, totalCages, cagePrice, breedLabel || null, JSON.stringify(list), notes || null, id]
+         full_name=$1, phone=$2, email=$3, wilaya=$4, baladya=$5, address=$6,
+         num_birds=$7, num_cages=$8, cage_price=$9, breed=$10, entries=$11::jsonb, notes=$12, updated_at=NOW()
+       WHERE id=$13 RETURNING *`,
+      [fullName, phone, email || null, wilaya, baladya, address || null, totalBirds, totalCages, cagePrice, breedLabel || null, JSON.stringify(list), notes || null, id]
     );
     if (rows.length === 0) return res.status(404).json({ error: 'المشارك غير موجود' });
     res.json({ user: publicUser(rows[0]) });
   } catch (e) {
-    if (e.code === '23505') return res.status(409).json({ error: 'رقم الهاتف مستعمل من طرف مشارك آخر' });
+    if (e.code === '23505') {
+      const isEmail = e.constraint && e.constraint.includes('email');
+      return res.status(409).json({ error: isEmail ? 'البريد الإلكتروني مستعمل من طرف مشارك آخر' : 'رقم الهاتف مستعمل من طرف مشارك آخر' });
+    }
     res.status(500).json({ error: 'تعذّر التعديل' });
   }
 });

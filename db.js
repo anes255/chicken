@@ -70,6 +70,14 @@ async function initDb() {
   await pool.query("ALTER TABLE participants ALTER COLUMN breed TYPE TEXT;");
   await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS entries JSONB NOT NULL DEFAULT '[]'::jsonb;");
   await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS cage_price NUMERIC(12,2) NOT NULL DEFAULT 0;");
+  await pool.query("ALTER TABLE participants ADD COLUMN IF NOT EXISTS address TEXT;");
+  // Enforce unique email (case-insensitive) when provided. Guarded: if legacy
+  // duplicates exist the index is skipped, and the code-level check still blocks new ones.
+  try {
+    await pool.query("CREATE UNIQUE INDEX IF NOT EXISTS participants_email_unique ON participants (lower(email)) WHERE email IS NOT NULL AND email <> '';");
+  } catch (e) {
+    console.warn('email unique index not created (likely existing duplicates):', e.message);
+  }
   await pool.query('CREATE INDEX IF NOT EXISTS idx_participants_wilaya ON participants (wilaya);');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_participants_created ON participants (created_at DESC);');
   // GIN index makes the breed-containment filter (entries @> ...) fast at scale.
